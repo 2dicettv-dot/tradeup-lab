@@ -107,6 +107,7 @@ export function buildItemsDb(skins, crates) {
   const cols = [];
   const usedIds = new Set();
   const crateNames = new Map();
+  const skinOwners = new Map();
   const crateKey = (c) => String(c.id || c.name);
   const colRecord = (c) => {
     const key = String(c.id || c.name);
@@ -140,6 +141,8 @@ export function buildItemsDb(skins, crates) {
     const flags = (sk.stattrak ? 1 : 0) | (sk.souvenir ? 2 : 0);
     for (const c of owners) {
       const rec = colRecord(c);
+      if (!skinOwners.has(name)) skinOwners.set(name, new Set());
+      skinOwners.get(name).add(rec);
       if (!rec.rows.has(name)) rec.rows.set(name, [r, name, r4(min), r4(max), flags]);
       for (const cr of Array.isArray(sk.crates) ? sk.crates : []) {
         if (!cr || !(cr.id || cr.name)) continue;
@@ -157,6 +160,11 @@ export function buildItemsDb(skins, crates) {
     const key = crateKey(cr);
     if (cr.name) crateNames.set(key, String(cr.name));
     if (/^case$/i.test(String(cr.type || ''))) caseKeys.add(key);
+    // A case or terminal lists the skins it holds: link it to their collections too.
+    for (const x of Array.isArray(cr.contains) ? cr.contains : []) {
+      const owners = x && typeof x.name === 'string' ? skinOwners.get(x.name.trim()) : null;
+      if (owners) for (const rec of owners) rec.crates.add(key);
+    }
     const names = [...new Set((Array.isArray(cr.contains_rare) ? cr.contains_rare : []).map((x) => (x && typeof x.name === 'string' ? baseName(x.name) : null)).filter(Boolean))];
     if (!names.length) continue;
     rareByKey.set(key, names);
@@ -222,9 +230,24 @@ export function buildItemsDb(skins, crates) {
       labels.push(crateNames.get(key) || key);
     }
     const gold = names.length ? poolFor(names, labels.join(' · ')).id : null;
-    const caseNames = [...new Set([...rec.crates].filter((k) => caseKeys.has(k) || /case$/i.test(crateNames.get(k) || '')).map((k) => crateNames.get(k)).filter(Boolean))];
-    const display = caseNames.length === 1 ? caseNames[0] : rec.name;
-    out.push({ rec, row: [rec.id, display, caseNames.length || gold ? 'case' : 'collection', gold, display !== rec.name ? rec.name : null] });
+    const crateList = [...new Set([...rec.crates].map((k) => crateNames.get(k)).filter(Boolean))];
+    // Terminals (Genesis, Dead Hand, ...) keep the collection's name; the terminal name is kept for search.
+    const terminals = crateList.filter((n) => /terminal/i.test(n));
+    const caseNames = [...new Set([...rec.crates].filter((k) => (caseKeys.has(k) || /case$/i.test(crateNames.get(k) || '')) && !/terminal/i.test(crateNames.get(k) || '')).map((k) => crateNames.get(k)).filter(Boolean))];
+    let type = 'collection';
+    let display = rec.name;
+    let alt = null;
+    if (terminals.length) {
+      type = 'terminal';
+      alt = terminals[0];
+    } else if (caseNames.length || gold) {
+      type = 'case';
+      if (caseNames.length === 1) {
+        display = caseNames[0];
+        alt = rec.name;
+      }
+    }
+    out.push({ rec, row: [rec.id, display, type, gold, alt] });
   }
   const skinRows = [];
   out.forEach(({ rec }, ci) => {
@@ -267,7 +290,8 @@ async function loadItems() {
         console.log(`Couldn't get the case list (${e.message}); using the knife list instead.`);
       }
       const db = buildItemsDb(skins, crates);
-      console.log(`Built the full skin list: ${db.skins.length} skins, ${db.specials.length} knives and gloves, ${db.collections.length} collections.`);
+      const count = (t) => db.collections.filter((c) => c[2] === t).length;
+      console.log(`Built the full skin list: ${db.skins.length} skins, ${db.specials.length} knives and gloves, ${db.collections.length} collections (${count('case')} cases, ${count('terminal')} terminals, ${count('collection')} other).`);
       return db;
     } catch (e) {
       console.log(`Couldn't build the skin list from ${base} (${e.message}).`);
